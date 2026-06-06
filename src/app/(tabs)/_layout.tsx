@@ -48,15 +48,6 @@ const _layout = () => {
         }}
       />
       <Tabs.Screen
-        name="simulation"
-        options={{
-          title: "Processors",
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name={"memory" as any} size={size + 2} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
         name="dashboard"
         options={{
           title: "Analytics",

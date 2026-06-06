@@ -2,15 +2,44 @@ import { StyleSheet, Text, View, Platform, ActivityIndicator } from 'react-nativ
 import React, { useEffect } from 'react'
 import { useRouter } from 'expo-router'
 import { MaterialCommunityIcons } from "@expo/vector-icons"
+import useStore from '@/store'
+import { seedDummyData } from '@/data'
 
 const SplashScreen = () => {
   const router = useRouter()
+  const openDB = useStore((state)=>state.openDB);
+  const createTable = useStore((state)=>state.createTable)
+  const getAllEventData = useStore((state)=>state.getAllEventData)
+  const getAllSessionData = useStore((state)=>state.getAllSessionData)
+
   useEffect(()=>{
-    const route = ()=>{
+    openDB();
+    createTable();
+
     
+    (async () => {
+      try {
+        const events = await getAllEventData('HarshAcceleration');
+        console.log("Database HarshAcceleration Events:", events);
+        const sessions = await getAllSessionData();
+        console.log("Database Sessions Count:", sessions.length, "Sessions:", sessions);
+      } catch (err) {
+        console.error("[Debug Database Log Error]", err);
+      }
+    })();
+    
+    // Seed the database with dummy data asynchronously if it hasn't been seeded yet
+    const db = useStore.getState().db;
+    if (db) {
+      seedDummyData(db).catch((err) => {
+        console.error("[Seeding Error] Failed to seed database:", err);
+      });
+    }
+
+    const route = ()=>{
       router.replace("/(tabs)/home" as any)
     }
-    setTimeout(()=>{route()},5000)
+    setTimeout(()=>{route()},3000)
   },[])
   return (
     <View style={styles.container}>

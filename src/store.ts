@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { DeviceMotion } from "expo-sensors";
 import { aggressiveSteeringMovementEvent, EMA, excessiveDeviceMovementEvent, harshAccelerationEvent, harshBreakingEventDetection, IDeviceTelemetryData, phoneUseDuringDrivingEvent, sharpTurnEvent } from "./engine";
+import * as SQLite from 'expo-sqlite';
 
 export type Events = "HarshBreaking" | 
 "HarshAcceleration" | 
@@ -34,6 +35,24 @@ export interface IStore{
         ExcessiveDeviceMovement: number;
         PhoneUseDuringDriving: number;
     },
+    eventScoreImpactMap:{
+        HarshBreaking: number;
+        HarshAcceleration: number;
+        SharpTurn: number;
+        AggressiveSteeringMovement: number;
+        ExcessiveDeviceMovement: number;
+        PhoneUseDuringDriving: number;
+    },
+    startTime: number | null,
+    endTime: number | null,
+    db:null | SQLite.SQLiteDatabase,
+    sessionId: number | null,
+    createSession: () => void,
+    clearSession: () => void,
+    updateStartTime: (time: number) => void,
+    updateEndTime: (time: number) => void,
+    clearStartTime: () => void,
+    clearEndTime: () => void,
     addToBuffer:(cur:IDeviceTelemetryData )=>void,
     eventDetection:()=>void,
     pointDeduction:()=>void,
@@ -41,6 +60,12 @@ export interface IStore{
     stopEngine:()=>void,
     addEventToHistory: (event: Events) => void,
     updateEventStats:(event:Events)=>void,
+    openDB:()=>void,
+    createTable:()=>void,
+    insertIntoSessionTable: (sessionId: number, startTime: number, endTime: number, score: number) => Promise<void>,
+    insertIntoEventsTable: (sessionId: number, eventType: string, timestamp: number, scoreImpact: number) => Promise<void>,
+    getAllEventData: (eventName: string) => Promise<any[]>,
+    getAllSessionData: () => Promise<any[]>,
 }
 
 
@@ -63,7 +88,41 @@ const useStore = create<IStore>((set, get) => ({
         ExcessiveDeviceMovement: 0,
         PhoneUseDuringDriving: 0,
     },
-    
+    eventScoreImpactMap:{
+        "HarshBreaking": -5,
+        "HarshAcceleration": -5,
+        "SharpTurn": -4,
+        "AggressiveSteeringMovement": -6,
+        "ExcessiveDeviceMovement": -3,
+        "PhoneUseDuringDriving": -10,
+    },
+    startTime: null,
+    endTime: null,
+
+    db:null,
+    sessionId:null,
+
+    createSession:()=>{
+        const id = Date.now();
+        set({sessionId:id})
+    },
+
+    clearSession:()=>{
+        set({sessionId:null})
+    },
+
+    updateStartTime:(time:number)=>{
+        set({startTime:time})
+    },
+    updateEndTime:(time:number)=>{
+        set({endTime:time})
+    },
+    clearStartTime:()=>{
+        set({startTime:null})
+    },
+    clearEndTime:()=>{
+        set({endTime:null})
+    },
     
     startEngine: async () => {
         console.log("engine")
@@ -82,7 +141,7 @@ const useStore = create<IStore>((set, get) => ({
         })
         set({eventHistory:[]})
         const subscription = DeviceMotion.addListener((data) => {
-            console.log(data)
+            // console.log(data)
             set({ data:data as IDeviceTelemetryData});
             get().addToBuffer(data as IDeviceTelemetryData)
             get().eventDetection()
@@ -92,15 +151,34 @@ const useStore = create<IStore>((set, get) => ({
 
 
         set({subscription});
+        set({startTime:Date.now()})
+        get().createSession();
     },
 
     stopEngine: () => {
         const subscription = get().subscription;
         if (subscription) {
             subscription.remove();
+            set({endTime:Date.now()})
+            const sessionId = get().sessionId;
+            const startTime = get().startTime;
+            const endTime = get().endTime;
+            const score = get().score;
+            if (sessionId !== null && startTime !== null && endTime !== null) {
+                get().insertIntoSessionTable(sessionId, startTime, endTime, score);
+                
+                const eventHistory = get().eventHistory;
+                const eventScoreImpactMap = get().eventScoreImpactMap;
+                eventHistory.forEach((event) => {
+                    console.log(`data inserted ${sessionId} ${event.event} ${event.timestamp}`)
+                    get().insertIntoEventsTable(sessionId, event.event, event.timestamp, eventScoreImpactMap[event.event]);
+                });
+            }
+            
             set({subscription: null});
             set({data:null})
             set({prevData:null})
+            set({sessionId:null})
             set({score:100})
             set({buffer:null})
             set({events:[]})
@@ -154,8 +232,9 @@ const useStore = create<IStore>((set, get) => ({
             // console.log(processedData)
             set({prevData: processedData});
             // console.log(get().prevData)
-            if(get().buffer?.length >= 50){
-                let newBuffer = [...get().buffer];
+            const buffer = get().buffer;
+            if(buffer && buffer.length >= 50){
+                let newBuffer = [...buffer];
                 newBuffer.shift();
                 newBuffer.push(processedData);
                 set({buffer:newBuffer});
@@ -261,6 +340,78 @@ const useStore = create<IStore>((set, get) => ({
             },
         }));
     },
+
+    openDB:()=>{
+        set({db:SQLite.openDatabaseSync("drive_analyzer")})
+    },
+
+    createTable:()=>{
+        const db = get().db;
+
+        db?.execSync(`
+            
+            CREATE TABLE IF NOT EXISTS EVENTS (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER,
+                event_type TEXT,
+                timestamp INTEGER,
+                score_impact INTEGER
+            );
+            
+            CREATE TABLE IF NOT EXISTS SESSIONS (
+                id INTEGER PRIMARY KEY,
+                start_time INTEGER,
+                end_time INTEGER,
+                score INTEGER
+            );
+            
+            `)
+
+    },
+
+    insertIntoSessionTable:async (sessionId:number,startTime:number,endTime:number,score:number)=>{
+        const db = get().db;
+        if(!db){
+            return;
+        }
+        await db.runAsync("INSERT INTO SESSIONS (id, start_time, end_time, score) VALUES (?, ?, ?, ?)", [sessionId, startTime, endTime, score]);
+
+    },
+
+    insertIntoEventsTable:async (sessionId:number,eventType:string,timestamp:number,scoreImpact:number)=>{
+        const db = get().db;
+        if(!db){
+            return;
+        }
+        await db.runAsync("INSERT INTO EVENTS (session_id, event_type, timestamp, score_impact) VALUES (?, ?, ?, ?)", [sessionId, eventType, timestamp, scoreImpact]);
+    },
+
+    getAllEventData:async (eventName:string)=>{
+        const db = get().db;
+        if(!db){
+            return [];
+        }
+        const result = await db.getAllAsync("SELECT * FROM EVENTS WHERE event_type = ?", [eventName]);
+        return result;
+    },
+
+    getAllSessionData:async ()=>{
+        const db = get().db;
+        if(!db){
+            return [];
+        }
+        const result = await db.getAllAsync("SELECT * FROM SESSIONS");
+        return result;
+    },
+
+
+
+    
+
+
+
+
+    
 
 
 }));
